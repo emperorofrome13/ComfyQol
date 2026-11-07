@@ -20,7 +20,8 @@ const app = {
 };
 const file = path.join(__dirname, "../web/comfyq.js");
 const source = fs.readFileSync(file, "utf8").replace(/^import .*;\r?\n/gm, "");
-vm.runInNewContext(source, { app, api: {}, console, Map });
+const scope = { app, api: {}, console, Map, URL, URLSearchParams, location: { href: "http://127.0.0.1:8188/" } };
+vm.runInNewContext(source, scope);
 const remove = extension.getCanvasMenuItems().find(item => item?.content === "comfyQ: Remove All Subgraphs").callback;
 remove();
 assert.deepEqual(graph._nodes, [ordinary]);
@@ -80,4 +81,40 @@ extension.nodeCreated(missingLoader);
 missingLoader.size = [300,100]; missingLoader.flags = {}; missingLoader.widgets[0].y = 25;
 missingLoader.onDrawForeground(ctx);
 assert.equal(missingLoader.__comfyqFolderIconRects.map(r => r.action).join(), "open,download");
-console.log("PASS: ordinary nodes preserved, subgraphs removed, repeat removal safe, dual CLIP icons outside combo bounds, promoted/nested subgraph models, unpack, missing-model detection.");
+
+// Dashboard: widgets grouped by section, prompts labelled by the sampler input they feed, bypassed nodes and linked widgets skipped.
+const links = new Map();
+const link = (id, from, to, slot) => { links.set(id, {target_id: to.id, target_slot: slot}); from.outputs[0].links.push(id); };
+const dashGraph = {links, getNodeById: id => dashGraph._nodes.find(n => n.id === id) || subNodes.find(n => n.id === id)};
+const sampler = {id: 3, type: "KSampler", title: "KSampler", graph: dashGraph, inputs: [{name: "positive"}, {name: "negative"}],
+  widgets: [{name: "seed", value: 1}, {name: "control_after_generate", value: "fixed"}, {name: "steps", value: 20}, {name: "cfg", value: 7},
+    {name: "sampler_name", value: "euler", options: {values: ["euler"]}}, {name: "denoise", value: 1}]};
+const guidance = {id: 4, type: "FluxGuidance", title: "Guidance", graph: dashGraph, inputs: [{name: "conditioning"}], outputs: [{links: []}], widgets: [{name: "guidance", value: 3.5}]};
+const positive = {id: 1, type: "CLIPTextEncode", title: "Text", graph: dashGraph, outputs: [{links: []}], widgets: [{name: "text", value: "a cat"}]};
+const negative = {id: 2, type: "CLIPTextEncode", title: "Text", graph: dashGraph, outputs: [{links: []}], widgets: [{name: "text", value: "blurry"}]};
+const latent = {id: 5, type: "EmptyLatentImage", title: "Latent", graph: dashGraph, inputs: [{name: "width", widget: {name: "width"}, link: 9}],
+  widgets: [{name: "width", value: 1024}, {name: "height", value: 1024}, {name: "batch_size", value: 1}]};
+const save = {id: 6, type: "SaveImage", title: "Save", graph: dashGraph, constructor: {nodeData: {output_node: true}}, widgets: [{name: "filename_prefix", value: "ComfyUI"}]};
+const bypassed = {id: 7, type: "LoraLoader", title: "Off", mode: 4, graph: dashGraph, widgets: [{name: "lora_name", value: "x.safetensors"}]};
+const subNodes = [{id: 8, type: "CheckpointLoaderSimple", title: "Load Checkpoint", widgets: [{name: "ckpt_name", value: "m.safetensors"}]}];
+const sub = {id: 9, type: "uuid", title: "Model", isSubgraphNode: () => true, subgraph: {nodes: subNodes}};
+link(1, negative, guidance, 0);
+links.set(2, {target_id: 3, target_slot: 1}); guidance.outputs[0].links.push(2);
+link(3, positive, sampler, 0);
+dashGraph._nodes = [negative, positive, guidance, sampler, latent, save, bypassed, sub];
+app.graph = dashGraph;
+const sections = Object.fromEntries(scope.dashboardGroups().map(([name, groups]) => [name, groups.map(g => `${g.role || ""}:${g.title}:${g.widgets.map(w => w.name).join("+")}`)]));
+assert.equal(JSON.stringify(sections), JSON.stringify({
+  Prompt: ["Positive:Text:text", "Negative:Text:text"],
+  Models: [":Model › Load Checkpoint:ckpt_name"],
+  Sampling: [":Guidance:guidance", ":KSampler:steps+cfg+sampler_name"],
+  Generation: [":KSampler:seed+control_after_generate", ":Latent:height+batch_size"],
+  Refinement: [":KSampler:denoise"],
+  Output: [":Save:filename_prefix"],
+}));
+
+// Saving uses the original file named in a /view URL, not the preview parameters.
+assert.equal(JSON.stringify(scope.fileFromViewUrl("/api/view?filename=a.png&subfolder=x&type=temp&preview=webp;50&rand=1")),
+  JSON.stringify({filename: "a.png", subfolder: "x", type: "temp"}));
+assert.equal(scope.fileFromViewUrl("/assets/logo.png"), null);
+console.log("PASS: ordinary nodes preserved, subgraphs removed, repeat removal safe, dual CLIP icons outside combo bounds, promoted/nested subgraph models, unpack, missing-model detection, dashboard sections, view URL parsing.");

@@ -14,12 +14,14 @@ from dataclasses import dataclass, field
 from email.message import Message
 from pathlib import PurePath
 from typing import Any
+from io import BytesIO
 from urllib.parse import unquote, urlparse
 
 import aiohttp
 from aiohttp import web
 
 import folder_paths
+from PIL import Image
 from server import PromptServer
 
 if sys.platform.startswith("win"):
@@ -289,6 +291,42 @@ def _clear_model_caches(folder: str) -> None:
         manager.clear_cache()
 
 
+OUTPUT_MEDIA = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".webm", ".mov"}
+THUMB_SIZE = 320
+
+
+def _list_outputs() -> list[dict[str, Any]]:
+    root = folder_paths.get_output_directory()
+    files = []
+    for folder, _, names in os.walk(root):
+        for name in names:
+            if os.path.splitext(name)[1].lower() not in OUTPUT_MEDIA:
+                continue
+            stat = os.stat(os.path.join(folder, name))
+            subfolder = os.path.relpath(folder, root).replace(os.sep, "/")
+            files.append({"filename": name, "subfolder": "" if subfolder == "." else subfolder, "type": "output", "mtime": stat.st_mtime, "size": stat.st_size})
+    files.sort(key=lambda item: item["mtime"], reverse=True)
+    return files
+
+
+def _output_file(filename: str, subfolder: str) -> str:
+    root = os.path.abspath(folder_paths.get_output_directory())
+    path = os.path.abspath(os.path.join(root, _safe_subpath(subfolder), _safe_filename(filename)))
+    if os.path.commonpath([root, path]) != root or not os.path.isfile(path):
+        raise FileNotFoundError("Output file not found")
+    return path
+
+
+def _thumbnail(path: str) -> bytes:
+    with Image.open(path) as image:
+        image.thumbnail((THUMB_SIZE, THUMB_SIZE))
+        if image.mode not in {"RGB", "RGBA"}:
+            image = image.convert("RGBA")
+        data = BytesIO()
+        image.save(data, "WEBP", quality=80)
+    return data.getvalue()
+
+
 def _model_folders_payload() -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for name, (folders, extensions) in folder_paths.folder_names_and_paths.items():
@@ -360,7 +398,7 @@ def register_routes() -> None:
     async def info(request: web.Request) -> web.Response:
         return web.json_response(
             {
-                "version": "1.03",
+                "version": "1.04",
                 "process_id": os.getpid(),
                 "model_folders": _model_folders_payload(),
                 "paths": {
@@ -401,6 +439,21 @@ def register_routes() -> None:
             return web.json_response({"ok": True, "path": path})
         except Exception as exc:
             return _json_error(str(exc))
+
+    @routes.get("/comfyq/outputs")
+    async def list_outputs(request: web.Request) -> web.Response:
+        limit = int(request.query.get("limit", 120))
+        files = await asyncio.to_thread(_list_outputs)
+        return web.json_response({"total": len(files), "files": files[:limit]})
+
+    @routes.get("/comfyq/thumb")
+    async def output_thumbnail(request: web.Request) -> web.Response:
+        try:
+            path = _output_file(request.query.get("filename", ""), request.query.get("subfolder", ""))
+            data = await asyncio.to_thread(_thumbnail, path)
+        except (OSError, ValueError) as exc:
+            return _json_error(str(exc), status=404)
+        return web.Response(body=data, content_type="image/webp", headers={"Cache-Control": "max-age=86400"})
 
     @routes.get("/comfyq/downloads")
     async def list_downloads(request: web.Request) -> web.Response:

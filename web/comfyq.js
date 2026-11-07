@@ -25,6 +25,14 @@ const PANEL_POSITION_KEY = "comfyQ.panelPosition";
 const ADVANCED_OPEN_KEY = "comfyQ.advancedOpen";
 const LAUNCHER_POSITION_KEY = "comfyQ.launcherPosition";
 const DRAG_THRESHOLD = 4;
+const DASHBOARD_POSITION_KEY = "comfyQ.dashboardPosition";
+const DASHBOARD_SIZE_KEY = "comfyQ.dashboardSize";
+const DASHBOARD_OPEN_KEY = "comfyQ.dashboardOpen";
+const DASHBOARD_COLLAPSED_KEY = "comfyQ.dashboardCollapsed";
+const OUTPUTS_POSITION_KEY = "comfyQ.outputsPosition";
+const OUTPUTS_SIZE_KEY = "comfyQ.outputsSize";
+const OUTPUT_MANAGER_KEY = "comfyQ.outputManager";
+const OUTPUT_PAGE = 120;
 
 function $(selector, root = document) {
   return root.querySelector(selector);
@@ -107,6 +115,29 @@ function makeMovable(element, handle, key) {
     window.addEventListener("pointercancel", onEnd);
   });
 }
+
+function readStorage(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStorage(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+function rememberSize(element, key) {
+  const size = readStorage(key, null);
+  if (size) Object.assign(element.style, { width: `${size.width}px`, height: `${size.height}px` });
+  new ResizeObserver(() => {
+    if (element.classList.contains("open")) writeStorage(key, { width: element.offsetWidth, height: element.offsetHeight });
+  }).observe(element);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -598,9 +629,24 @@ function ensurePanel() {
     }
   }
 
+  const outputToggle = el("input", { type: "checkbox" });
+  outputToggle.checked = outputManagerEnabled();
+  outputToggle.addEventListener("change", () => setOutputManager(outputToggle.checked));
+  state.outputsButton = el("button", { text: "Outputs", title: "Browse, download and save output images", onclick: () => toggleOutputs(true) });
+  state.outputsButton.hidden = !outputManagerEnabled();
+  state.vramEl = el("span", { class: "comfyq-muted comfyq-vram" });
+  const tools = el("div", { class: "comfyq-row" }, [
+    el("button", { text: "Dashboard", title: "Prompt, model and sampler controls in one window", onclick: () => toggleDashboard(true) }),
+    state.outputsButton,
+    el("span", { class: "comfyq-spacer" }),
+    state.vramEl,
+    el("button", { text: "Free VRAM", title: "Unload all models and clear ComfyUI's cache", onclick: () => freeVram().catch((error) => toast(error.message, true)) }),
+  ]);
+
   const advanced = el("details", { class: "comfyq-advanced" }, [
     el("summary", { text: "Advanced" }),
     el("div", { class: "comfyq-advanced-body" }, [
+      el("label", { class: "comfyq-check" }, [outputToggle, "Output manager: gallery with multi-file download, and Save As when you right-click an output image"]),
       el("label", { text: "Open folder" }),
       el("div", { class: "comfyq-row" }, [
         el("button", { text: "Input", onclick: () => openFolder({ special: "input" }) }),
@@ -637,6 +683,7 @@ function ensurePanel() {
       el("strong", { text: "comfyQ" }),
       el("button", { class: "comfyq-icon", title: "Close", text: "x", onclick: () => panel.classList.remove("open") }),
     ]),
+    tools,
     missingSection,
     downloads,
     status,
@@ -684,6 +731,7 @@ async function togglePanel(prefill = {}) {
     setPanelStatus(`No download link in this workflow for ${prefill.needUrl}. Paste one under Advanced, then click Download to Selected Folder.`, true);
   }
   renderMissingModels(true);
+  updateVram(true);
 }
 
 function setPanelStatus(message, error = false) {
@@ -842,6 +890,552 @@ async function pollDownload(id) {
   }
 }
 
+function formatGB(bytes) {
+  return (bytes / 1073741824).toFixed(1);
+}
+
+async function gpuStats() {
+  const stats = await comfyQFetch("/system_stats");
+  return stats.devices?.find((device) => device.type !== "cpu");
+}
+
+async function updateVram(force = false) {
+  if (!state.vramEl || !state.panel?.classList.contains("open")) return;
+  if (!force && Date.now() - (state.vramCheckedAt || 0) < 4000) return;
+  state.vramCheckedAt = Date.now();
+  const device = await gpuStats().catch(() => null);
+  state.vramEl.textContent = device ? `VRAM ${formatGB(device.vram_total - device.vram_free)} / ${formatGB(device.vram_total)} GB` : "";
+  state.vramEl.title = device?.name || "";
+}
+
+// ComfyUI's /free route: once idle, the prompt worker unloads every model and drops cached
+// node outputs, which also releases the models held in RAM. The next run loads them again.
+async function freeVram() {
+  const queue = await comfyQFetch("/queue");
+  const response = await api.fetchApi("/free", { method: "POST", body: JSON.stringify({ unload_models: true, free_memory: true }) });
+  if (!response.ok) throw new Error(`Free VRAM failed: ${response.status} ${response.statusText}`);
+  if (queue.queue_running?.length) {
+    toast("VRAM will be freed when the current run finishes.");
+    return;
+  }
+  await sleep(1500);
+  const device = await gpuStats();
+  toast(device ? `Models unloaded. VRAM in use: ${formatGB(device.vram_total - device.vram_free)} of ${formatGB(device.vram_total)} GB.` : "Models unloaded.");
+  updateVram(true);
+}
+
+const DASHBOARD_SECTIONS = ["Prompt", "Models", "Sampling", "Generation", "Refinement", "Output"];
+const PROMPT_WIDGETS = /^(text|prompt|positive|negative|text_[gl]|clip_[gl]|t5xxl|user_prompt|system_prompt)$/;
+const SAMPLING_WIDGETS = /^(steps|cfg|sampler_name|scheduler|guidance|shift|max_shift|base_shift|start_at_step|end_at_step)$/;
+const GENERATION_WIDGETS = /^(seed|noise_seed|control_after_generate|width|height|batch_size|length)$/;
+const REFINEMENT_WIDGETS = /^(denoise|upscale_method|upscale_model_name|scale_by|upscale_by|guide_size|bbox_threshold|feather)$/;
+const OUTPUT_WIDGETS = /^(filename_prefix|format|file_format|output_format|extension|quality|codec|crf|lossless|output_path)$/;
+
+function nodeIsActive(node) {
+  return node.mode !== 2 && node.mode !== 4;
+}
+
+// Nodes that will run: the root graph plus each used subgraph's contents, with the subgraph titles leading to them.
+function activeWorkflowNodes() {
+  const found = [];
+  const visited = new Set();
+  const visit = (nodes, path) => {
+    for (const node of nodes || []) {
+      if (!nodeIsActive(node)) continue;
+      if (!isSubgraphNode(node)) found.push({ node, path });
+      else if (node.subgraph && !visited.has(node.subgraph)) {
+        visited.add(node.subgraph);
+        visit(node.subgraph.nodes, [...path, node.title]);
+      }
+    }
+  };
+  visit((app.graph?.rootGraph || app.graph)?._nodes, []);
+  return found;
+}
+
+function widgetIsLinked(node, widget) {
+  return (node.inputs || []).some((input) => input.widget?.name === widget.name && input.link != null);
+}
+
+function dashboardSection(node, widget) {
+  const name = widget.name || "";
+  const type = node.comfyClass || node.type || "";
+  if (!name || widget.type === "button" || widget.hidden || widget.options?.hidden || /note/i.test(type) || widgetIsLinked(node, widget)) return null;
+  if (REFINEMENT_WIDGETS.test(name)) return "Refinement";
+  if (/detailer|upscale|hires/i.test(type) && (SAMPLING_WIDGETS.test(name) || GENERATION_WIDGETS.test(name))) return "Refinement";
+  if (typeof widget.value === "string" && (PROMPT_WIDGETS.test(name) || widget.options?.multiline || (/^PrimitiveString/.test(type) && name === "value"))) return "Prompt";
+  if (/style/i.test(name) && !folderForWidget(node, widget)) return "Prompt";
+  if (folderForWidget(node, widget) || widgetLooksLikeModel(widget)) return "Models";
+  if (/lora/i.test(type) && /strength|weight/.test(name)) return "Models";
+  if (SAMPLING_WIDGETS.test(name)) return "Sampling";
+  if (GENERATION_WIDGETS.test(name)) return "Generation";
+  if (OUTPUT_WIDGETS.test(name) && (node.constructor?.nodeData?.output_node || /save/i.test(type))) return "Output";
+  return null;
+}
+
+function linkTargets(node) {
+  const graph = node.graph;
+  return (node.outputs || []).flatMap((output) => (output.links || []).map((id) => {
+    const link = graph?.links?.get?.(id) ?? graph?.links?.[id];
+    const target = link && graph.getNodeById(link.target_id);
+    return target ? { target, input: target.inputs?.[link.target_slot]?.name || "" } : null;
+  }).filter(Boolean));
+}
+
+// Follow a text encoder's output (through guidance or conditioning nodes) to the sampler input it feeds.
+function promptRole(node, depth = 0) {
+  const targets = linkTargets(node);
+  for (const { input } of targets) {
+    if (/negative/i.test(input)) return "Negative";
+    if (/positive/i.test(input)) return "Positive";
+  }
+  if (depth < 3) {
+    for (const { target } of targets) {
+      const role = promptRole(target, depth + 1);
+      if (role) return role;
+    }
+  }
+  if (depth === 0) {
+    if (/negative/i.test(node.title)) return "Negative";
+    if (/positive/i.test(node.title)) return "Positive";
+  }
+  return null;
+}
+
+function dashboardGroups() {
+  const sections = new Map(DASHBOARD_SECTIONS.map((name) => [name, []]));
+  for (const { node, path } of activeWorkflowNodes()) {
+    const bySection = new Map();
+    for (const widget of node.widgets || []) {
+      const section = dashboardSection(node, widget);
+      if (!section) continue;
+      if (!bySection.has(section)) bySection.set(section, []);
+      bySection.get(section).push(widget);
+    }
+    for (const [section, widgets] of bySection) {
+      sections.get(section).push({ node, widgets, role: section === "Prompt" ? promptRole(node) : null, title: [...path, node.title].join(" › ") });
+    }
+  }
+  const order = { Positive: 0, Negative: 1 };
+  sections.get("Prompt").sort((a, b) => (order[a.role] ?? 2) - (order[b.role] ?? 2));
+  return [...sections].filter(([, groups]) => groups.length);
+}
+
+function dashboardSignature(groups) {
+  return JSON.stringify(groups.map(([section, list]) => [section, list.map(({ node, widgets, role, title }) => [node.id, title, role, widgets.map((widget) => [widget.name, widget.options?.values?.length])])]));
+}
+
+function numberStep(widget) {
+  const { step2, step, precision } = widget.options || {};
+  if (step2 !== undefined) return step2;
+  if (precision >= 0) return Number((10 ** -precision).toFixed(precision));
+  return step > 10 ? step / 10 : "any";
+}
+
+function setWidgetValue(node, widget, value) {
+  const previous = widget.value;
+  widget.value = value;
+  widget.callback?.(value, app.canvas, node);
+  node.onWidgetChanged?.(widget.name, value, previous, widget);
+  app.canvas?.setDirty?.(true, true);
+}
+
+function comboValues(node, widget) {
+  const values = widget.options?.values;
+  return typeof values === "function" ? values(widget, node) : values;
+}
+
+function syncControl({ input, widget }) {
+  if (input === document.activeElement) return;
+  if (input.type === "checkbox") input.checked = Boolean(widget.value);
+  else if (input.value !== String(widget.value ?? "")) {
+    input.value = widget.value ?? "";
+    // A combo value that is not in its option list cannot be shown; rebuild to add it.
+    if (input.tagName === "SELECT" && input.value !== String(widget.value)) state.dashboardSignature = null;
+  }
+}
+
+function widgetControl(node, widget, multiline) {
+  const values = comboValues(node, widget);
+  const set = (value) => setWidgetValue(node, widget, value);
+  let input;
+  if (Array.isArray(values)) {
+    input = el("select", { class: "comfyq-select" }, values.map((value) => el("option", { value, text: value })));
+    if (!values.includes(widget.value)) input.prepend(el("option", { value: widget.value, text: `${widget.value} (missing)` }));
+    input.addEventListener("change", () => set(input.value));
+  } else if (typeof widget.value === "boolean") {
+    input = el("input", { type: "checkbox" });
+    input.addEventListener("change", () => set(input.checked));
+  } else if (typeof widget.value === "number") {
+    const { min, max, precision } = widget.options || {};
+    input = el("input", { class: "comfyq-input", type: "number", step: numberStep(widget), min, max });
+    input.addEventListener("change", () => {
+      const value = Number(input.value);
+      if (input.value !== "" && Number.isFinite(value)) set(precision === 0 ? Math.round(value) : value);
+    });
+  } else if (typeof widget.value === "string") {
+    input = el(multiline ? "textarea" : "input", { class: "comfyq-input", rows: multiline ? 4 : undefined, spellcheck: "false" });
+    input.addEventListener("input", () => set(input.value));
+  } else {
+    return null;
+  }
+  const control = { input, widget };
+  syncControl(control);
+  state.dashboardControls.push(control);
+  return input;
+}
+
+function dashboardField(node, widget, multiline) {
+  const input = widgetControl(node, widget, multiline);
+  if (!input) return null;
+  const extra = /^(seed|noise_seed)$/.test(widget.name)
+    ? el("button", {
+      class: "comfyq-icon",
+      title: "Random seed",
+      text: "🎲",
+      onclick: () => {
+        setWidgetValue(node, widget, Math.floor(Math.random() * Math.min(widget.options?.max ?? 2 ** 32, 2 ** 48)));
+        renderDashboard();
+      },
+    })
+    : null;
+  return el("div", { class: `comfyq-field${multiline ? " wide" : ""}` }, [
+    el("span", { text: (widget.label || widget.name).replace(/_/g, " "), title: widget.name }),
+    input,
+    extra,
+  ]);
+}
+
+function showNode(node) {
+  if (app.canvas?.graph !== node.graph) return;
+  app.canvas.centerOnNode?.(node);
+  app.canvas.selectNode?.(node);
+}
+
+function renderDashboard(force = false) {
+  const body = state.dashboardBody;
+  if (!body || !state.dashboard.classList.contains("open")) return;
+  const groups = dashboardGroups();
+  const signature = dashboardSignature(groups);
+  if (!force && signature === state.dashboardSignature) {
+    state.dashboardControls.forEach(syncControl);
+    return;
+  }
+  state.dashboardSignature = signature;
+  state.dashboardControls = [];
+  if (!groups.length) {
+    body.replaceChildren(el("div", { class: "comfyq-ok", text: "No prompt, model or sampler controls found in this workflow." }));
+    return;
+  }
+  const collapsed = readStorage(DASHBOARD_COLLAPSED_KEY, {});
+  body.replaceChildren(...groups.map(([section, list]) => {
+    const details = el("details", { class: "comfyq-section" }, [
+      el("summary", { text: section }),
+      ...list.map((group) => el("div", { class: "comfyq-group" }, [
+        el("div", {
+          class: "comfyq-group-title",
+          text: group.role ? `${group.role} · ${group.title}` : group.title,
+          title: "Show this node on the canvas",
+          onclick: () => showNode(group.node),
+        }),
+        ...group.widgets.map((widget) => dashboardField(group.node, widget, section === "Prompt")),
+      ])),
+    ]);
+    details.open = !collapsed[section];
+    details.addEventListener("toggle", () => writeStorage(DASHBOARD_COLLAPSED_KEY, { ...readStorage(DASHBOARD_COLLAPSED_KEY, {}), [section]: !details.open }));
+    return details;
+  }));
+}
+
+async function queueWorkflow() {
+  const command = app.extensionManager?.command;
+  if (command?.commands?.some((item) => item.id === "Comfy.QueuePrompt")) await command.execute("Comfy.QueuePrompt");
+  else await app.queuePrompt(0, 1);
+}
+
+function ensureDashboard() {
+  if (state.dashboard) return state.dashboard;
+  const header = el("div", { class: "comfyq-header", title: "Drag to move" }, [
+    el("strong", { text: "comfyQ Dashboard" }),
+    el("div", { class: "comfyq-row" }, [
+      el("button", { class: "comfyq-primary", text: "Run", title: "Queue this workflow", onclick: () => queueWorkflow().catch((error) => toast(error.message, true)) }),
+      el("button", { text: "Free VRAM", title: "Unload all models and clear ComfyUI's cache", onclick: () => freeVram().catch((error) => toast(error.message, true)) }),
+      el("button", { class: "comfyq-icon", title: "Close", text: "x", onclick: () => toggleDashboard(false) }),
+    ]),
+  ]);
+  state.dashboardBody = el("div", { class: "comfyq-window-body" });
+  state.dashboardControls = [];
+  state.dashboard = el("div", { class: "comfyq-window comfyq-dashboard" }, [header, state.dashboardBody]);
+  makeMovable(state.dashboard, header, DASHBOARD_POSITION_KEY);
+  rememberSize(state.dashboard, DASHBOARD_SIZE_KEY);
+  document.body.append(state.dashboard);
+  return state.dashboard;
+}
+
+function toggleDashboard(open = !state.dashboard?.classList.contains("open")) {
+  const dashboard = ensureDashboard();
+  dashboard.classList.toggle("open", open);
+  writeStorage(DASHBOARD_OPEN_KEY, open);
+  if (!open) return;
+  restoreElementPosition(dashboard, DASHBOARD_POSITION_KEY);
+  renderDashboard(true);
+}
+
+const OUTPUT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif", mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime" };
+
+function outputManagerEnabled() {
+  return readStorage(OUTPUT_MANAGER_KEY, false) === true;
+}
+
+function setOutputManager(enabled) {
+  writeStorage(OUTPUT_MANAGER_KEY, enabled);
+  if (state.outputsButton) state.outputsButton.hidden = !enabled;
+  if (!enabled) state.outputs?.classList.remove("open");
+  toast(enabled ? "Output manager on: click Outputs in the comfyQ panel, or right-click an output image." : "Output manager off.");
+}
+
+function viewUrl(file) {
+  return api.apiURL(`/view?${new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "", type: file.type || "output" })}`);
+}
+
+function thumbUrl(file) {
+  return api.apiURL(`/comfyq/thumb?${new URLSearchParams({ filename: file.filename, subfolder: file.subfolder || "", t: file.mtime })}`);
+}
+
+// ComfyUI shows images through /view; keep only what names the file, so saving gets the original rather than a preview.
+function fileFromViewUrl(src) {
+  const url = new URL(src, location.href);
+  if (!url.pathname.endsWith("/view") || !url.searchParams.get("filename")) return null;
+  return { filename: url.searchParams.get("filename"), subfolder: url.searchParams.get("subfolder") || "", type: url.searchParams.get("type") || "output" };
+}
+
+function fileKey(file) {
+  return `${file.type}/${file.subfolder}/${file.filename}`;
+}
+
+function fileExtension(file) {
+  return file.filename.split(".").pop().toLowerCase();
+}
+
+async function fetchFile(file) {
+  const response = await fetch(viewUrl(file));
+  if (!response.ok) throw new Error(`Could not read ${file.filename}`);
+  return response.blob();
+}
+
+async function writeToHandle(handle, blob) {
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+}
+
+function reportUnlessCancelled(error) {
+  if (error?.name !== "AbortError") toast(error.message, true);
+}
+
+function downloadFile(file, name = file.filename) {
+  const link = el("a", { href: viewUrl(file), download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function downloadFiles(files) {
+  for (const file of files) {
+    downloadFile(file);
+    await sleep(300);
+  }
+  toast(`Downloading ${files.length} file(s). If the browser asks, allow multiple downloads.`);
+}
+
+// The save dialogs need a secure page (localhost); over --listen on a LAN address the browser download is used instead.
+async function saveFileAs(file) {
+  if (!window.showSaveFilePicker) {
+    const name = window.prompt("Save as", file.filename);
+    if (name) downloadFile(file, name);
+    return;
+  }
+  const extension = fileExtension(file);
+  const type = OUTPUT_TYPES[extension];
+  const handle = await window.showSaveFilePicker({
+    id: "comfyq-save",
+    suggestedName: file.filename,
+    types: type ? [{ description: extension.toUpperCase(), accept: { [type]: [`.${extension}`] } }] : undefined,
+  });
+  await writeToHandle(handle, await fetchFile(file));
+  toast(`Saved ${handle.name}`);
+}
+
+async function saveFilesToFolder(files) {
+  if (!window.showDirectoryPicker) {
+    await downloadFiles(files);
+    return;
+  }
+  const folder = await window.showDirectoryPicker({ id: "comfyq-outputs", mode: "readwrite" });
+  for (const file of files) {
+    await writeToHandle(await folder.getFileHandle(file.filename, { create: true }), await fetchFile(file));
+  }
+  toast(`Saved ${files.length} file(s) to ${folder.name}.`);
+}
+
+function closeMenu() {
+  state.menu?.remove();
+  state.menu = null;
+}
+
+function showMenu(x, y, items) {
+  closeMenu();
+  state.menu = el("div", { class: "comfyq-menu" }, items.map(([text, action]) => el("button", {
+    text,
+    onclick: () => {
+      closeMenu();
+      Promise.resolve().then(action).catch(reportUnlessCancelled);
+    },
+  })));
+  document.body.append(state.menu);
+  const bounds = state.menu.getBoundingClientRect();
+  state.menu.style.left = `${Math.min(x, window.innerWidth - bounds.width - 4)}px`;
+  state.menu.style.top = `${Math.min(y, window.innerHeight - bounds.height - 4)}px`;
+}
+
+function selectedOutputs() {
+  return (state.outputFiles || []).filter((file) => state.outputSelected.has(fileKey(file)));
+}
+
+// Right-click on any output image (node previews, the queue, the comfyQ gallery) offers Save As. Shift+right-click keeps the browser menu.
+function watchOutputImages() {
+  document.addEventListener("contextmenu", (event) => {
+    if (!outputManagerEnabled() || event.shiftKey) return;
+    // Image grids wrap each thumbnail in a button, so the click can land on the button instead of the image.
+    const media = event.target.closest?.("img, video, [data-comfyq-file]") || event.target.closest?.("button")?.querySelector("img, video");
+    const file = media && (media.dataset.comfyqFile ? JSON.parse(media.dataset.comfyqFile) : fileFromViewUrl(media.currentSrc || media.src || ""));
+    if (!file) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const items = [["Save As…", () => saveFileAs(file)], ["Open in New Tab", () => window.open(viewUrl(file), "_blank")]];
+    const selected = media.closest(".comfyq-outputs") ? selectedOutputs() : [];
+    if (selected.length > 1) {
+      items.push([`Download ${selected.length} selected`, () => downloadFiles(selected)]);
+      items.push([`Save ${selected.length} selected to folder…`, () => saveFilesToFolder(selected)]);
+    }
+    showMenu(event.clientX, event.clientY, items);
+  }, true);
+  document.addEventListener("pointerdown", (event) => {
+    if (state.menu && !state.menu.contains(event.target)) closeMenu();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMenu();
+  });
+}
+
+function nodeOutputFiles(node) {
+  return (app.nodeOutputs?.[node.id]?.images || [])
+    .filter((image) => image.filename)
+    .map(({ filename, subfolder, type }) => ({ filename, subfolder: subfolder || "", type: type || "output" }));
+}
+
+function updateOutputsToolbar() {
+  const selected = selectedOutputs().length;
+  state.outputCount.textContent = `${selected} selected · ${state.outputFiles.length} of ${state.outputTotal}`;
+  for (const button of state.outputActions) button.disabled = !selected;
+  state.outputMore.hidden = state.outputFiles.length >= state.outputTotal;
+}
+
+function renderOutputs() {
+  state.outputGrid.replaceChildren(...state.outputFiles.map((file) => {
+    const key = fileKey(file);
+    const data = JSON.stringify(file);
+    const preview = OUTPUT_TYPES[fileExtension(file)]?.startsWith("video")
+      ? el("div", { class: "comfyq-video", text: "▶", "data-comfyq-file": data })
+      : el("img", { loading: "lazy", src: thumbUrl(file), alt: file.filename, "data-comfyq-file": data });
+    const tile = el("div", {
+      class: `comfyq-tile${state.outputSelected.has(key) ? " selected" : ""}`,
+      title: `${file.subfolder ? `${file.subfolder}/` : ""}${file.filename}`,
+      ondblclick: () => window.open(viewUrl(file), "_blank"),
+    }, [preview, el("span", { class: "comfyq-tile-name", text: file.filename })]);
+    tile.addEventListener("click", () => {
+      if (state.outputSelected.has(key)) state.outputSelected.delete(key);
+      else state.outputSelected.add(key);
+      tile.classList.toggle("selected", state.outputSelected.has(key));
+      updateOutputsToolbar();
+    });
+    return tile;
+  }));
+  updateOutputsToolbar();
+}
+
+async function loadOutputs(limit = Math.max(OUTPUT_PAGE, state.outputFiles.length)) {
+  const result = await comfyQFetch(`/comfyq/outputs?limit=${limit}`);
+  state.outputFiles = result.files;
+  state.outputTotal = result.total;
+  const keys = new Set(result.files.map(fileKey));
+  for (const key of state.outputSelected) if (!keys.has(key)) state.outputSelected.delete(key);
+  renderOutputs();
+}
+
+function ensureOutputs() {
+  if (state.outputs) return state.outputs;
+  state.outputFiles = [];
+  state.outputTotal = 0;
+  state.outputSelected = new Set();
+  state.outputGrid = el("div", { class: "comfyq-grid" });
+  state.outputCount = el("span", { class: "comfyq-muted" });
+  state.outputMore = el("button", { text: "Show more", onclick: () => loadOutputs(state.outputFiles.length + OUTPUT_PAGE).catch((error) => toast(error.message, true)) });
+  state.outputActions = [
+    el("button", { class: "comfyq-primary", text: "Download", title: "Download each selected file separately (no ZIP)", onclick: () => downloadFiles(selectedOutputs()) }),
+  ];
+  if (window.showDirectoryPicker) {
+    state.outputActions.push(el("button", { text: "Save to Folder…", title: "Choose a folder and save the selected files into it", onclick: () => saveFilesToFolder(selectedOutputs()).catch(reportUnlessCancelled) }));
+  }
+  const header = el("div", { class: "comfyq-header", title: "Drag to move" }, [
+    el("strong", { text: "Outputs" }),
+    el("div", { class: "comfyq-row" }, [
+      el("button", { text: "Refresh", onclick: () => loadOutputs().catch((error) => toast(error.message, true)) }),
+      el("button", { text: "Open Folder", onclick: () => openFolder({ special: "output" }).catch((error) => toast(error.message, true)) }),
+      el("button", { class: "comfyq-icon", title: "Close", text: "x", onclick: () => toggleOutputs(false) }),
+    ]),
+  ]);
+  state.outputs = el("div", { class: "comfyq-window comfyq-outputs" }, [
+    header,
+    el("div", { class: "comfyq-row comfyq-wrap" }, [
+      el("button", { text: "Select All", onclick: () => {
+        state.outputFiles.forEach((file) => state.outputSelected.add(fileKey(file)));
+        renderOutputs();
+      } }),
+      el("button", { text: "Clear", onclick: () => {
+        state.outputSelected.clear();
+        renderOutputs();
+      } }),
+      state.outputCount,
+      el("span", { class: "comfyq-spacer" }),
+      ...state.outputActions,
+    ]),
+    el("div", { class: "comfyq-window-body" }, [state.outputGrid, state.outputMore]),
+    el("div", { class: "comfyq-muted comfyq-hint", text: "Click to select · double-click to open · right-click for Save As" }),
+  ]);
+  makeMovable(state.outputs, header, OUTPUTS_POSITION_KEY);
+  rememberSize(state.outputs, OUTPUTS_SIZE_KEY);
+  document.body.append(state.outputs);
+  api.addEventListener("executed", () => {
+    if (!state.outputs.classList.contains("open")) return;
+    clearTimeout(state.outputsReload);
+    state.outputsReload = setTimeout(() => loadOutputs().catch(() => {}), 800);
+  });
+  return state.outputs;
+}
+
+function toggleOutputs(open = true) {
+  if (open && !outputManagerEnabled()) {
+    toast("Turn on the output manager under Advanced in the comfyQ panel first.", true);
+    return;
+  }
+  const outputs = ensureOutputs();
+  outputs.classList.toggle("open", open);
+  if (!open) return;
+  restoreElementPosition(outputs, OUTPUTS_POSITION_KEY);
+  loadOutputs().catch((error) => toast(error.message, true));
+}
+
 function injectStyles() {
   if ($("#comfyq-style")) return;
   document.head.append(
@@ -860,18 +1454,19 @@ function injectStyles() {
           color: var(--fg-color, #eee); background: var(--comfy-menu-bg, #242424);
           border: 1px solid var(--border-color, #555); border-radius: 8px;
           box-shadow: 0 12px 34px rgba(0,0,0,.35); font-size: 14px;
-          max-height: calc(100vh - 90px); overflow-y: auto;
+          max-height: calc(100vh - 140px); overflow-y: auto;
         }
         .comfyq-panel.open { display: flex; }
         .comfyq-header, .comfyq-row { display: flex; align-items: center; gap: 8px; }
         .comfyq-header { cursor: grab; touch-action: none; user-select: none; }
         .comfyq-header.dragging { cursor: grabbing; }
         .comfyq-header { justify-content: space-between; }
-        .comfyq-panel button, .comfyq-input, .comfyq-select {
+        .comfyq-panel button, .comfyq-window button, .comfyq-input, .comfyq-select {
           min-height: 30px; border-radius: 6px; border: 1px solid var(--border-color, #555);
           background: var(--comfy-input-bg, #111); color: var(--fg-color, #eee);
         }
-        .comfyq-panel button { cursor: pointer; padding: 4px 8px; }
+        .comfyq-panel button, .comfyq-window button { cursor: pointer; padding: 4px 8px; white-space: nowrap; }
+        .comfyq-panel button:disabled, .comfyq-window button:disabled { opacity: .45; cursor: default; }
         .comfyq-primary { background: #2f6f55 !important; }
         .comfyq-icon { width: 28px; }
         .comfyq-input, .comfyq-select { width: 100%; padding: 4px 7px; box-sizing: border-box; }
@@ -890,7 +1485,7 @@ function injectStyles() {
         .comfyq-advanced summary { cursor: pointer; opacity: .8; padding: 2px 0; }
         .comfyq-advanced[open] summary { margin-bottom: 8px; }
         .comfyq-advanced label { font-size: 12px; opacity: .75; }
-        .comfyq-status:empty, .comfyq-panel [hidden] { display: none !important; }
+        .comfyq-status:empty, .comfyq-panel [hidden], .comfyq-window [hidden] { display: none !important; }
         .comfyq-launcher.dragging { cursor: grabbing; opacity: .85; }
         .comfyq-launcher.comfyq-has-missing { background: #2f6f55; border-color: #5fbf8f; color: #fff; }
         .comfyq-missing { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
@@ -904,6 +1499,48 @@ function injectStyles() {
           display: inline-flex; align-items: center; vertical-align: middle; margin-right: 4px;
           padding: 0; border: 0; background: none; cursor: pointer; pointer-events: auto;
         }
+        .comfyq-spacer { flex: 1; }
+        .comfyq-wrap { flex-wrap: wrap; }
+        .comfyq-vram { font-size: 12px; white-space: nowrap; }
+        .comfyq-advanced label.comfyq-check { display: flex; align-items: flex-start; gap: 6px; cursor: pointer; font-size: 13px; opacity: 1; }
+        .comfyq-window {
+          position: fixed; top: 96px; left: 64px; z-index: 9998; display: none; flex-direction: column; gap: 8px;
+          padding: 10px 12px; box-sizing: border-box; resize: both; overflow: hidden; min-width: 300px; min-height: 220px;
+          max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); font-size: 14px;
+          color: var(--fg-color, #eee); background: var(--comfy-menu-bg, #242424);
+          border: 1px solid var(--border-color, #555); border-radius: 8px; box-shadow: 0 12px 34px rgba(0,0,0,.35);
+        }
+        .comfyq-window.open { display: flex; }
+        .comfyq-dashboard { width: 400px; height: 70vh; }
+        .comfyq-outputs { width: 620px; height: 65vh; left: auto; right: 18px; }
+        .comfyq-window-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+        .comfyq-section { padding: 4px 8px 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
+        .comfyq-section > summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+        .comfyq-group { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+        .comfyq-group-title { font-size: 12px; opacity: .7; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .comfyq-field { display: grid; grid-template-columns: 105px minmax(0, 1fr) auto; gap: 6px; align-items: center; font-size: 13px; }
+        .comfyq-field.wide { grid-template-columns: minmax(0, 1fr); }
+        .comfyq-field > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }
+        .comfyq-field textarea { resize: vertical; min-height: 72px; font-family: inherit; line-height: 1.35; }
+        .comfyq-field input[type="checkbox"] { justify-self: start; }
+        .comfyq-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+        .comfyq-tile { position: relative; aspect-ratio: 1; display: flex; overflow: hidden; cursor: pointer; border-radius: 6px; border: 2px solid transparent; background: rgba(127,127,127,.15); }
+        .comfyq-tile img, .comfyq-video { width: 100%; height: 100%; object-fit: cover; }
+        .comfyq-video { display: flex; align-items: center; justify-content: center; font-size: 28px; }
+        .comfyq-tile.selected { border-color: #3fb27a; }
+        .comfyq-tile.selected::after {
+          content: "✓"; position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%;
+          display: flex; align-items: center; justify-content: center; font-size: 12px; background: #2f8f5f; color: #fff;
+        }
+        .comfyq-tile-name { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 4px; font-size: 11px; color: #fff; background: rgba(0,0,0,.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .comfyq-hint { font-size: 11px; }
+        .comfyq-menu {
+          position: fixed; z-index: 10000; display: flex; flex-direction: column; min-width: 190px; padding: 4px;
+          color: var(--fg-color, #eee); background: var(--comfy-menu-bg, #242424); font-size: 14px;
+          border: 1px solid var(--border-color, #555); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35);
+        }
+        .comfyq-menu button { text-align: left; padding: 6px 10px; border: 0; border-radius: 4px; background: none; color: inherit; cursor: pointer; }
+        .comfyq-menu button:hover { background: rgba(127,127,127,.25); }
         .comfyq-vue-folder:hover svg path { fill: #b5862e; stroke: #fff; }
         .comfyq-vue-download:hover svg rect { fill: #3fb27a; }
       `,
@@ -912,9 +1549,17 @@ function injectStyles() {
 }
 
 function resetPositions() {
-  for (const [element, key] of [[state.launcher, LAUNCHER_POSITION_KEY], [state.panel, PANEL_POSITION_KEY]]) {
-    try { localStorage.removeItem(key); } catch {}
-    if (element) for (const side of ["left", "top", "right", "bottom"]) element.style[side] = "";
+  const windows = [
+    [state.launcher, LAUNCHER_POSITION_KEY],
+    [state.panel, PANEL_POSITION_KEY],
+    [state.dashboard, DASHBOARD_POSITION_KEY, DASHBOARD_SIZE_KEY],
+    [state.outputs, OUTPUTS_POSITION_KEY, OUTPUTS_SIZE_KEY],
+  ];
+  for (const [element, ...keys] of windows) {
+    for (const key of keys) {
+      try { localStorage.removeItem(key); } catch {}
+    }
+    if (element) for (const side of ["left", "top", "right", "bottom", "width", "height"]) element.style[side] = "";
   }
 }
 
@@ -923,14 +1568,18 @@ app.registerExtension({
   commands: [
     { id: "comfyQ.openPanel", label: "comfyQ: Open Panel", function: () => togglePanel() },
     { id: "comfyQ.downloadMissing", label: "comfyQ: Download Missing Models", function: () => downloadModels(findMissingModels().filter((entry) => entry.url)) },
+    { id: "comfyQ.dashboard", label: "comfyQ: Dashboard", function: () => toggleDashboard() },
+    { id: "comfyQ.freeVram", label: "comfyQ: Free VRAM", function: () => freeVram().catch((error) => toast(error.message, true)) },
+    { id: "comfyQ.outputs", label: "comfyQ: Outputs", function: () => toggleOutputs(true) },
     { id: "comfyQ.resetPosition", label: "comfyQ: Reset Button Position", function: resetPositions },
   ],
   menuCommands: [
-    { path: ["Extensions", "comfyQ"], commands: ["comfyQ.openPanel", "comfyQ.downloadMissing", "comfyQ.resetPosition"] },
+    { path: ["Extensions", "comfyQ"], commands: ["comfyQ.openPanel", "comfyQ.dashboard", "comfyQ.downloadMissing", "comfyQ.freeVram", "comfyQ.outputs", "comfyQ.resetPosition"] },
   ],
   async setup() {
     injectStyles();
     watchVueNodes();
+    watchOutputImages();
     await loadInfo();
     state.launcher = el("button", {
       class: "comfyq-launcher",
@@ -944,7 +1593,10 @@ app.registerExtension({
     setInterval(() => {
       updateLauncher();
       syncVueFolderIcons();
+      updateVram();
     }, 2000);
+    setInterval(renderDashboard, 1000);
+    if (readStorage(DASHBOARD_OPEN_KEY, false)) toggleDashboard(true);
   },
   nodeCreated(node) {
     installFolderIcons(node);
@@ -953,6 +1605,9 @@ app.registerExtension({
     return [
       null,
       { content: "comfyQ: Open Panel", callback: () => togglePanel() },
+      { content: "comfyQ: Dashboard", callback: () => toggleDashboard(true) },
+      { content: "comfyQ: Free VRAM", callback: () => freeVram().catch((error) => toast(error.message, true)) },
+      ...(outputManagerEnabled() ? [{ content: "comfyQ: Outputs", callback: () => toggleOutputs(true) }] : []),
       { content: "comfyQ: Download Missing Models", callback: () => downloadModels(findMissingModels().filter((entry) => entry.url)) },
       { content: "comfyQ: Unpack All Subgraphs", callback: unpackAllSubgraphs },
       { content: "comfyQ: Remove All Subgraphs", callback: removeAllSubgraphs },
@@ -972,6 +1627,11 @@ app.registerExtension({
       items.push(missing.length
         ? { content: `comfyQ: Download Missing Model${missing.length === 1 ? "" : "s"} (${missing.length})`, callback: () => downloadModels(missing) }
         : { content: "comfyQ: Download Model Here", callback: () => togglePanel({ folder: entries[0].folder }) });
+    }
+    const files = outputManagerEnabled() ? nodeOutputFiles(node) : [];
+    if (files.length) {
+      items.push({ content: "comfyQ: Save Image As…", callback: () => saveFileAs(files[node.imageIndex ?? 0] || files[0]).catch(reportUnlessCancelled) });
+      if (files.length > 1) items.push({ content: `comfyQ: Save All ${files.length} Images to Folder…`, callback: () => saveFilesToFolder(files).catch(reportUnlessCancelled) });
     }
     return items;
   },

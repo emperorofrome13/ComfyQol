@@ -57,5 +57,32 @@ class ModelPathTests(unittest.TestCase):
             server._resolve_model_path("comfyq_test", filename="../outside.safetensors")
 
 
+class OutputTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=ROOT)
+        self.previous = folder_paths.get_output_directory()
+        folder_paths.set_output_directory(self.temp.name)
+        root = Path(self.temp.name)
+        (root / "old.png").write_bytes(b"x")
+        os.utime(root / "old.png", (1, 1))
+        (root / "sub").mkdir()
+        (root / "sub" / "new.webp").write_bytes(b"x")
+        (root / "notes.txt").write_text("not media")
+
+    def tearDown(self):
+        folder_paths.set_output_directory(self.previous)
+        self.temp.cleanup()
+
+    def test_lists_media_newest_first(self):
+        self.assertEqual([(f["subfolder"], f["filename"]) for f in server._list_outputs()], [("sub", "new.webp"), ("", "old.png")])
+
+    def test_output_file_stays_inside_output(self):
+        self.assertEqual(server._output_file("new.webp", "sub"), str(Path(self.temp.name, "sub", "new.webp")))
+        with self.assertRaises(ValueError):
+            server._output_file("old.png", "../")
+        with self.assertRaises(FileNotFoundError):
+            server._output_file("missing.png", "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

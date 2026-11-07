@@ -17,6 +17,20 @@ It adds no workflow nodes, so it never changes how a workflow runs or saves.
   Each download shows a progress bar with size and speed. When the last one finishes,
   comfyQ runs ComfyUI's own **Refresh Node Definitions** (the same as pressing R), so model
   lists update and ComfyUI's missing-model errors clear without reloading the page.
+- **Dashboard.** One movable, resizable window with the workflow's main controls, grouped as
+  Prompt (positive and negative, styles), Models (checkpoint, LoRAs and their strengths),
+  Sampling (steps, CFG, sampler, scheduler), Generation (seed with a random button,
+  width/height, batch), Refinement (denoise, upscale, detailer) and Output (filename prefix,
+  format). Includes controls inside subgraphs and skips bypassed nodes. Edits go straight to the
+  nodes and the other way round. It has its own **Run** button and stays open across reloads.
+- **Free VRAM.** Unloads every model and clears ComfyUI's cache (the same as ComfyUI's `/free`
+  API), so the GPU is free for other programs. The panel shows current VRAM use. If a run is
+  in progress, memory is freed when it finishes.
+- **Output manager** (off by default; turn it on under **Advanced**). An **Outputs** gallery
+  of your output folder: select several images and download them as separate files (no ZIP),
+  or save them all into a folder you pick. Right-click any output image (node previews, the
+  queue, the gallery) and choose **Save As…** to pick the filename and folder.
+  Shift+right-click still opens the browser's own menu.
 - **Folder icons** beside model pickers (`unet_name`, `clip_name`, `vae_name`, `ckpt_name`,
   `lora_name`, ControlNet, upscale, CLIP vision, style) open the folder that holds that
   model, searching all of ComfyUI's configured model folders. On Windows the folder opens
@@ -72,6 +86,11 @@ checked so they stay inside ComfyUI's model folders.
 - Gated/login-only downloads (some Hugging Face and Civitai models), resume, and cancel are
   not supported yet. Download history is kept in server memory until restart.
 - Folder windows open on the computer running ComfyUI, not the one with the browser.
+- Save As and Save to Folder use the browser's file dialogs, which Chrome and Edge allow on
+  `localhost`. In other browsers, or over a LAN address, comfyQ asks for a filename and uses a
+  normal browser download instead.
+- The Dashboard recognises common widget names (`seed`, `steps`, `cfg`, `text`, `lora_name`,
+  …). Custom nodes with unusual widget names may not appear there.
 
 ## Development
 
