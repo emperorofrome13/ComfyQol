@@ -1,4 +1,4 @@
-# comfyQ
+# comfyQol
 
 Quality-of-life tools for ComfyUI: open model folders from the node, find the models a
 workflow is missing and download them in one click, and flatten subgraphs.
@@ -8,14 +8,14 @@ It adds no workflow nodes, so it never changes how a workflow runs or saves.
 
 ## Features
 
-- **Missing models, one click.** The `comfyQ` button shows `comfyQ · N missing` when the
+- **Missing models, one click.** The `comfyQol` button shows `comfyQol · N missing` when the
   open workflow needs models you don't have (including models inside subgraphs). The panel
   lists them with **Download** and **Download all**, and a green download button appears
   beside each missing model on the node. Links come from the workflow's own model metadata
   (`properties.models`, which the built-in templates include). Models without a link get
   **Add URL**, which fills in the folder and filename so you only paste the link.
   Each download shows a progress bar with size and speed. When the last one finishes,
-  comfyQ runs ComfyUI's own **Refresh Node Definitions** (the same as pressing R), so model
+  comfyQol runs ComfyUI's own **Refresh Node Definitions** (the same as pressing R), so model
   lists update and ComfyUI's missing-model errors clear without reloading the page.
 - **Dashboard.** One movable, resizable window with the workflow's main controls, grouped as
   Prompt (positive and negative, styles), Models (checkpoint, LoRAs and their strengths),
@@ -44,9 +44,9 @@ It adds no workflow nodes, so it never changes how a workflow runs or saves.
 - The panel shows only missing models and downloads. Everything else (open the input,
   output, and custom_nodes folders, download from any URL, subgraph tools, copy selected
   model names) is under **Advanced**.
-- The `comfyQ` button and panel can be dragged anywhere and remember their position.
-  Everything is also under **Extensions → comfyQ** in the top menu, including
-  **Reset Button Position**. Right-click a node or the canvas for comfyQ menu items.
+- The `comfyQol` button and panel can be dragged anywhere and remember their position.
+  Everything is also under **Extensions → comfyQol** in the top menu, including
+  **Reset Button Position**. Right-click a node or the canvas for comfyQol menu items.
 
 ## Install
 
@@ -57,12 +57,12 @@ git clone https://github.com/emperorofrome13/comfyQol
 ```
 
 Or download the ZIP from GitHub, extract it, and place the folder at
-`ComfyUI/custom_nodes/comfyQ` (for the Windows portable build:
-`ComfyUI_windows_portable/ComfyUI/custom_nodes/comfyQ`).
+`ComfyUI/custom_nodes/comfyQol` (for the Windows portable build:
+`ComfyUI_windows_portable/ComfyUI/custom_nodes/comfyQol`).
 
 With ComfyUI-Manager: **Install via Git URL** and paste the repository URL.
 
-Restart ComfyUI. The `comfyQ` button appears at the bottom right, above the canvas toolbar.
+Restart ComfyUI. The `comfyQol` button appears at the bottom right, above the canvas toolbar.
 No extra Python packages are needed.
 
 ## Compatibility
@@ -74,7 +74,7 @@ or when the selected value ends in a model file extension (for the menu items).
 
 ## Security
 
-comfyQ adds server routes that open folders on the machine running ComfyUI and download
+comfyQol adds server routes that open folders on the machine running ComfyUI and download
 files into its model folders. Anyone who can reach your ComfyUI server can use them, the same
 as the rest of ComfyUI's API. If you run ComfyUI with `--listen` on a shared network, keep
 that in mind. Downloads only accept `http://`/`https://` URLs, and folder and file names are
@@ -82,19 +82,19 @@ checked so they stay inside ComfyUI's model folders.
 
 ## Limitations
 
-- comfyQ does not search the web for models whose workflow has no download link.
+- comfyQol does not search the web for models whose workflow has no download link.
 - Gated/login-only downloads (some Hugging Face and Civitai models), resume, and cancel are
   not supported yet. Download history is kept in server memory until restart.
 - Folder windows open on the computer running ComfyUI, not the one with the browser.
 - Save As and Save to Folder use the browser's file dialogs, which Chrome and Edge allow on
-  `localhost`. In other browsers, or over a LAN address, comfyQ asks for a filename and uses a
+  `localhost`. In other browsers, or over a LAN address, comfyQol asks for a filename and uses a
   normal browser download instead.
 - The Dashboard recognises common widget names (`seed`, `steps`, `cfg`, `text`, `lora_name`,
   …). Custom nodes with unusual widget names may not appear there.
 
 ## Development
 
-From the `comfyQ` folder inside a ComfyUI install (or set `COMFYUI_PATH` to the ComfyUI folder):
+From the `comfyQol` folder inside a ComfyUI install (or set `COMFYUI_PATH` to the ComfyUI folder):
 
 ```bash
 python tests/test_paths.py

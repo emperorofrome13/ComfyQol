@@ -22,7 +22,7 @@ const file = path.join(__dirname, "../web/comfyq.js");
 const source = fs.readFileSync(file, "utf8").replace(/^import .*;\r?\n/gm, "");
 const scope = { app, api: {}, console, Map, URL, URLSearchParams, location: { href: "http://127.0.0.1:8188/" } };
 vm.runInNewContext(source, scope);
-const remove = extension.getCanvasMenuItems().find(item => item?.content === "comfyQ: Remove All Subgraphs").callback;
+const remove = extension.getCanvasMenuItems().find(item => item?.content === "comfyQol: Remove All Subgraphs").callback;
 remove();
 assert.deepEqual(graph._nodes, [ordinary]);
 assert.equal(graph.subgraphs.size, 0);
@@ -65,7 +65,7 @@ graph.unpackSubgraph = function(node) {
   this._nodes.splice(this._nodes.indexOf(node), 1, ...(node === outer ? [inner] : [{type:"KSampler"}]));
 };
 messages.length = 0;
-extension.getCanvasMenuItems().find(item => item?.content === "comfyQ: Unpack All Subgraphs").callback();
+extension.getCanvasMenuItems().find(item => item?.content === "comfyQol: Unpack All Subgraphs").callback();
 assert.deepEqual(graph._nodes.map(n => n.type), ["VAELoader", "KSampler", "broken"]);
 assert.match(messages[0], /Unpacked 2 subgraph\(s\); 1 could not/);
 // Missing models: value not in the combo list; URL comes from the workflow's properties.models.
@@ -75,8 +75,8 @@ const installedLoader = {type:"VAELoader",widgets:[{name:"vae_name",value:"ae.sa
 graph._nodes = [missingLoader, installedLoader];
 graph.subgraphs = new Map();
 const missingMenu = extension.getNodeMenuItems(missingLoader).map(i => i.content);
-assert.ok(missingMenu.includes("comfyQ: Download Missing Model (1)"), missingMenu.join());
-assert.ok(extension.getNodeMenuItems(installedLoader).map(i => i.content).includes("comfyQ: Download Model Here"));
+assert.ok(missingMenu.includes("comfyQol: Download Missing Model (1)"), missingMenu.join());
+assert.ok(extension.getNodeMenuItems(installedLoader).map(i => i.content).includes("comfyQol: Download Model Here"));
 extension.nodeCreated(missingLoader);
 missingLoader.size = [300,100]; missingLoader.flags = {}; missingLoader.widgets[0].y = 25;
 missingLoader.onDrawForeground(ctx);

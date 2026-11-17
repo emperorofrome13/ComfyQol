@@ -176,11 +176,11 @@ async function comfyQFetch(path, options = {}) {
 function toast(message, isError = false) {
   const toasts = app.extensionManager?.toast;
   if (toasts?.add) {
-    toasts.add({ severity: isError ? "error" : "success", summary: "comfyQ", detail: message, life: isError ? 8000 : 4000 });
+    toasts.add({ severity: isError ? "error" : "success", summary: "comfyQol", detail: message, life: isError ? 8000 : 4000 });
   } else if (app.ui?.dialog?.show) {
     app.ui.dialog.show(message);
   } else {
-    console[isError ? "error" : "log"](`[comfyQ] ${message}`);
+    console[isError ? "error" : "log"](`[comfyQol] ${message}`);
   }
 }
 
@@ -461,7 +461,7 @@ function syncVueFolderIcons() {
       labelEl.prepend(
         el("button", {
           class: "comfyq-vue-download",
-          title: `comfyQ: download missing ${widget.value} into ${folder}`,
+          title: `comfyQol: download missing ${widget.value} into ${folder}`,
           html: DOWNLOAD_SVG,
           onpointerdown: (event) => event.stopPropagation(),
           onclick: (event) => {
@@ -477,7 +477,7 @@ function syncVueFolderIcons() {
     labelEl.prepend(
       el("button", {
         class: "comfyq-vue-folder",
-        title: `comfyQ: open ${folder} folder`,
+        title: `comfyQol: open ${folder} folder`,
         html: FOLDER_SVG,
         onpointerdown: (event) => event.stopPropagation(),
         onclick: (event) => {
@@ -680,7 +680,7 @@ function ensurePanel() {
 
   const panel = el("div", { class: "comfyq-panel" }, [
     el("div", { class: "comfyq-header" }, [
-      el("strong", { text: "comfyQ" }),
+      el("strong", { text: "comfyQol" }),
       el("button", { class: "comfyq-icon", title: "Close", text: "x", onclick: () => panel.classList.remove("open") }),
     ]),
     tools,
@@ -691,8 +691,8 @@ function ensurePanel() {
   ]);
 
   const header = $(".comfyq-header", panel);
-  header.title = "Drag to move comfyQ; use arrow keys when focused";
-  header.setAttribute("aria-label", "Move comfyQ panel");
+  header.title = "Drag to move comfyQol; use arrow keys when focused";
+  header.setAttribute("aria-label", "Move comfyQol panel");
   makeMovable(panel, header, PANEL_POSITION_KEY);
   folderSelect.addEventListener("change", refreshPathOptions);
   document.body.append(panel);
@@ -790,7 +790,7 @@ function updateLauncher() {
   const launcher = state.launcher;
   if (!launcher) return;
   const count = findMissingModels().length;
-  launcher.textContent = count ? `comfyQ · ${count} missing` : `comfyQ v${state.info?.version || ""}`;
+  launcher.textContent = count ? `comfyQol · ${count} missing` : `comfyQol v${state.info?.version || ""}`;
   launcher.classList.toggle("comfyq-has-missing", count > 0);
   renderMissingModels();
 }
@@ -1156,7 +1156,7 @@ async function queueWorkflow() {
 function ensureDashboard() {
   if (state.dashboard) return state.dashboard;
   const header = el("div", { class: "comfyq-header", title: "Drag to move" }, [
-    el("strong", { text: "comfyQ Dashboard" }),
+    el("strong", { text: "comfyQol Dashboard" }),
     el("div", { class: "comfyq-row" }, [
       el("button", { class: "comfyq-primary", text: "Run", title: "Queue this workflow", onclick: () => queueWorkflow().catch((error) => toast(error.message, true)) }),
       el("button", { text: "Free VRAM", title: "Unload all models and clear ComfyUI's cache", onclick: () => freeVram().catch((error) => toast(error.message, true)) }),
@@ -1191,7 +1191,7 @@ function setOutputManager(enabled) {
   writeStorage(OUTPUT_MANAGER_KEY, enabled);
   if (state.outputsButton) state.outputsButton.hidden = !enabled;
   if (!enabled) state.outputs?.classList.remove("open");
-  toast(enabled ? "Output manager on: click Outputs in the comfyQ panel, or right-click an output image." : "Output manager off.");
+  toast(enabled ? "Output manager on: click Outputs in the comfyQol panel, or right-click an output image." : "Output manager off.");
 }
 
 function viewUrl(file) {
@@ -1302,7 +1302,7 @@ function selectedOutputs() {
   return (state.outputFiles || []).filter((file) => state.outputSelected.has(fileKey(file)));
 }
 
-// Right-click on any output image (node previews, the queue, the comfyQ gallery) offers Save As. Shift+right-click keeps the browser menu.
+// Right-click on any output image (node previews, the queue, the comfyQol gallery) offers Save As. Shift+right-click keeps the browser menu.
 function watchOutputImages() {
   document.addEventListener("contextmenu", (event) => {
     if (!outputManagerEnabled() || event.shiftKey) return;
@@ -1426,7 +1426,7 @@ function ensureOutputs() {
 
 function toggleOutputs(open = true) {
   if (open && !outputManagerEnabled()) {
-    toast("Turn on the output manager under Advanced in the comfyQ panel first.", true);
+    toast("Turn on the output manager under Advanced in the comfyQol panel first.", true);
     return;
   }
   const outputs = ensureOutputs();
@@ -1566,15 +1566,15 @@ function resetPositions() {
 app.registerExtension({
   name: "comfyQ.QualityOfLife",
   commands: [
-    { id: "comfyQ.openPanel", label: "comfyQ: Open Panel", function: () => togglePanel() },
-    { id: "comfyQ.downloadMissing", label: "comfyQ: Download Missing Models", function: () => downloadModels(findMissingModels().filter((entry) => entry.url)) },
-    { id: "comfyQ.dashboard", label: "comfyQ: Dashboard", function: () => toggleDashboard() },
-    { id: "comfyQ.freeVram", label: "comfyQ: Free VRAM", function: () => freeVram().catch((error) => toast(error.message, true)) },
-    { id: "comfyQ.outputs", label: "comfyQ: Outputs", function: () => toggleOutputs(true) },
-    { id: "comfyQ.resetPosition", label: "comfyQ: Reset Button Position", function: resetPositions },
+    { id: "comfyQ.openPanel", label: "comfyQol: Open Panel", function: () => togglePanel() },
+    { id: "comfyQ.downloadMissing", label: "comfyQol: Download Missing Models", function: () => downloadModels(findMissingModels().filter((entry) => entry.url)) },
+    { id: "comfyQ.dashboard", label: "comfyQol: Dashboard", function: () => toggleDashboard() },
+    { id: "comfyQ.freeVram", label: "comfyQol: Free VRAM", function: () => freeVram().catch((error) => toast(error.message, true)) },
+    { id: "comfyQ.outputs", label: "comfyQol: Outputs", function: () => toggleOutputs(true) },
+    { id: "comfyQ.resetPosition", label: "comfyQol: Reset Button Position", function: resetPositions },
   ],
   menuCommands: [
-    { path: ["Extensions", "comfyQ"], commands: ["comfyQ.openPanel", "comfyQ.dashboard", "comfyQ.downloadMissing", "comfyQ.freeVram", "comfyQ.outputs", "comfyQ.resetPosition"] },
+    { path: ["Extensions", "comfyQol"], commands: ["comfyQ.openPanel", "comfyQ.dashboard", "comfyQ.downloadMissing", "comfyQ.freeVram", "comfyQ.outputs", "comfyQ.resetPosition"] },
   ],
   async setup() {
     injectStyles();
@@ -1583,8 +1583,8 @@ app.registerExtension({
     await loadInfo();
     state.launcher = el("button", {
       class: "comfyq-launcher",
-      title: "Open comfyQ (drag to move)",
-      text: `comfyQ v${state.info.version}`,
+      title: "Open comfyQol (drag to move)",
+      text: `comfyQol v${state.info.version}`,
       onclick: () => togglePanel(),
     });
     document.body.append(state.launcher);
@@ -1604,15 +1604,15 @@ app.registerExtension({
   getCanvasMenuItems() {
     return [
       null,
-      { content: "comfyQ: Open Panel", callback: () => togglePanel() },
-      { content: "comfyQ: Dashboard", callback: () => toggleDashboard(true) },
-      { content: "comfyQ: Free VRAM", callback: () => freeVram().catch((error) => toast(error.message, true)) },
-      ...(outputManagerEnabled() ? [{ content: "comfyQ: Outputs", callback: () => toggleOutputs(true) }] : []),
-      { content: "comfyQ: Download Missing Models", callback: () => downloadModels(findMissingModels().filter((entry) => entry.url)) },
-      { content: "comfyQ: Unpack All Subgraphs", callback: unpackAllSubgraphs },
-      { content: "comfyQ: Remove All Subgraphs", callback: removeAllSubgraphs },
-      { content: "comfyQ: Copy Selected Model Names", callback: copySelectedModelNames },
-      { content: "comfyQ: Open Output Folder", callback: () => openFolder({ special: "output" }) },
+      { content: "comfyQol: Open Panel", callback: () => togglePanel() },
+      { content: "comfyQol: Dashboard", callback: () => toggleDashboard(true) },
+      { content: "comfyQol: Free VRAM", callback: () => freeVram().catch((error) => toast(error.message, true)) },
+      ...(outputManagerEnabled() ? [{ content: "comfyQol: Outputs", callback: () => toggleOutputs(true) }] : []),
+      { content: "comfyQol: Download Missing Models", callback: () => downloadModels(findMissingModels().filter((entry) => entry.url)) },
+      { content: "comfyQol: Unpack All Subgraphs", callback: unpackAllSubgraphs },
+      { content: "comfyQol: Remove All Subgraphs", callback: removeAllSubgraphs },
+      { content: "comfyQol: Copy Selected Model Names", callback: copySelectedModelNames },
+      { content: "comfyQol: Open Output Folder", callback: () => openFolder({ special: "output" }) },
     ];
   },
   getNodeMenuItems(node) {
@@ -1620,18 +1620,18 @@ app.registerExtension({
     const entries = getModelEntries(node);
     if (entries.length) {
       items.push({
-        content: "comfyQ: Open Model Folder",
+        content: "comfyQol: Open Model Folder",
         callback: () => openModelFoldersForNode(node),
       });
       const missing = missingModelsForNode(node);
       items.push(missing.length
-        ? { content: `comfyQ: Download Missing Model${missing.length === 1 ? "" : "s"} (${missing.length})`, callback: () => downloadModels(missing) }
-        : { content: "comfyQ: Download Model Here", callback: () => togglePanel({ folder: entries[0].folder }) });
+        ? { content: `comfyQol: Download Missing Model${missing.length === 1 ? "" : "s"} (${missing.length})`, callback: () => downloadModels(missing) }
+        : { content: "comfyQol: Download Model Here", callback: () => togglePanel({ folder: entries[0].folder }) });
     }
     const files = outputManagerEnabled() ? nodeOutputFiles(node) : [];
     if (files.length) {
-      items.push({ content: "comfyQ: Save Image As…", callback: () => saveFileAs(files[node.imageIndex ?? 0] || files[0]).catch(reportUnlessCancelled) });
-      if (files.length > 1) items.push({ content: `comfyQ: Save All ${files.length} Images to Folder…`, callback: () => saveFilesToFolder(files).catch(reportUnlessCancelled) });
+      items.push({ content: "comfyQol: Save Image As…", callback: () => saveFileAs(files[node.imageIndex ?? 0] || files[0]).catch(reportUnlessCancelled) });
+      if (files.length > 1) items.push({ content: `comfyQol: Save All ${files.length} Images to Folder…`, callback: () => saveFilesToFolder(files).catch(reportUnlessCancelled) });
     }
     return items;
   },

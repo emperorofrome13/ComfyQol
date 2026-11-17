@@ -386,7 +386,7 @@ async def _download(job: DownloadJob, expected_sha256: str | None, overwrite: bo
                 os.remove(temp_path)
         except OSError:
             pass
-        logging.exception("[comfyQ] Model download failed")
+        logging.exception("[comfyQol] Model download failed")
     finally:
         job.finished_at = time.time()
 

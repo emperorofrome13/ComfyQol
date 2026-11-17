@@ -7,9 +7,9 @@ from pathlib import Path
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Install comfyQ into another ComfyUI custom_nodes folder.")
+    parser = argparse.ArgumentParser(description="Install comfyQol into another ComfyUI custom_nodes folder.")
     parser.add_argument("comfyui_root", help="Path to a ComfyUI folder or ComfyUI_windows_portable folder.")
-    parser.add_argument("--replace", action="store_true", help="Replace an existing comfyQ installation.")
+    parser.add_argument("--replace", action="store_true", help="Replace an existing comfyQol installation.")
     args = parser.parse_args()
 
     source = Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ def main() -> int:
 
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".git")
     shutil.copytree(source, destination, ignore=ignore)
-    print(f"Installed comfyQ to {destination}")
+    print(f"Installed comfyQol to {destination}")
     return 0
 
 
