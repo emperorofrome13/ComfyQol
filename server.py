@@ -398,7 +398,7 @@ def register_routes() -> None:
     async def info(request: web.Request) -> web.Response:
         return web.json_response(
             {
-                "version": "1.04",
+                "version": "1.0.5",
                 "process_id": os.getpid(),
                 "model_folders": _model_folders_payload(),
                 "paths": {

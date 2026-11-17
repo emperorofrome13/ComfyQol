@@ -53,7 +53,7 @@ It adds no workflow nodes, so it never changes how a workflow runs or saves.
 With git, from your `ComfyUI/custom_nodes` folder:
 
 ```bash
-git clone https://github.com/emperorofrome13/ComfyQ
+git clone https://github.com/emperorofrome13/comfyQol
 ```
 
 Or download the ZIP from GitHub, extract it, and place the folder at
