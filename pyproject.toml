@@ -9,6 +9,6 @@ dependencies = []
 Repository = "https://github.com/emperorofrome13/comfyQol"
 
 [tool.comfy]
-PublisherId = "emperorofrome13"
+PublisherId = "emperorofrome"
 DisplayName = "comfyQol"
 Icon = ""
