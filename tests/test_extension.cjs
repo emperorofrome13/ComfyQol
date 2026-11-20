@@ -82,6 +82,36 @@ missingLoader.size = [300,100]; missingLoader.flags = {}; missingLoader.widgets[
 missingLoader.onDrawForeground(ctx);
 assert.equal(missingLoader.__comfyqFolderIconRects.map(r => r.action).join(), "open,download");
 
+// Models without a workflow link: Find fills the link only for an ungated match; misses and gated matches keep it empty.
+const unlinked = (value) => ({type:"UNETLoader",properties:{},widgets:[{name:"unet_name",value,options:{values:[]}}]});
+const unlinkedNodes = [unlinked("sub/found.safetensors"), unlinked("gated.safetensors"), unlinked("missing.safetensors")];
+graph._nodes = unlinkedNodes;
+const replies = {
+  "found.safetensors": {found:true,source:"Hugging Face",label:"Comfy-Org/X",url:"https://huggingface.co/Comfy-Org/X/resolve/main/found.safetensors",page:"https://huggingface.co/Comfy-Org/X",gated:false,size:null},
+  "gated.safetensors": {found:true,source:"Hugging Face",label:"org/gated",url:"https://huggingface.co/org/gated/resolve/main/gated.safetensors",page:"https://huggingface.co/org/gated",gated:true,size:null},
+  "missing.safetensors": {found:false,message:"missing.safetensors was not found on Hugging Face or Civitai."},
+};
+const requested = [];
+scope.api.fetchApi = async (url) => {
+  requested.push(url);
+  return {ok:true, json: async () => replies[new URLSearchParams(url.split("?")[1]).get("filename")]};
+};
+assert.ok(scope.findMissingModels().every(e => e.url === "" && e.search === null));
+(async () => {
+  await scope.findModels(scope.findMissingModels());
+  // The synchronous tests below replace app.graph while the searches are pending.
+  app.graph = graph;
+  graph._nodes = unlinkedNodes;
+  assert.deepEqual(requested, ["found", "gated", "missing"].map(n => `/comfyq/find-model?filename=${n}.safetensors`));
+  const byName = Object.fromEntries(scope.findMissingModels().map(e => [e.name, e]));
+  assert.equal(byName["sub/found.safetensors"].url, replies["found.safetensors"].url);
+  assert.equal(byName["gated.safetensors"].url, "");
+  assert.equal(byName["gated.safetensors"].search.gated, true);
+  assert.equal(byName["missing.safetensors"].url, "");
+  assert.equal(byName["missing.safetensors"].search.found, false);
+  console.log("PASS: find missing models (found, gated, not found)");
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+
 // Dashboard: widgets grouped by section, prompts labelled by the sampler input they feed, bypassed nodes and linked widgets skipped.
 const links = new Map();
 const link = (id, from, to, slot) => { links.set(id, {target_id: to.id, target_slot: slot}); from.outputs[0].links.push(id); };

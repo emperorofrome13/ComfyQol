@@ -84,5 +84,34 @@ class OutputTests(unittest.TestCase):
             server._output_file("missing.png", "")
 
 
+class FindModelTests(unittest.TestCase):
+    def test_queries_drop_precision_suffixes(self):
+        self.assertEqual(server._search_queries("z_image_turbo_bf16.safetensors"), ["z_image_turbo_bf16", "z_image_turbo"])
+        self.assertEqual(server._search_queries("flux1-dev-fp8_e4m3fn.safetensors"), ["flux1-dev-fp8_e4m3fn", "flux1-dev"])
+        self.assertEqual(server._search_queries("qwen_3_4b.safetensors"), ["qwen_3_4b"])
+
+    def test_hf_matches_exact_basename_and_prefers_ungated(self):
+        models = [
+            {"id": "org/gated", "gated": "manual", "siblings": [{"rfilename": "m.safetensors"}]},
+            {"id": "org/near", "siblings": [{"rfilename": "m_fp16.safetensors"}]},
+            {"id": "Comfy-Org/open", "gated": False, "siblings": [{"rfilename": "split_files/vae/M.safetensors"}]},
+        ]
+        found = server._match_hf(models, "m.safetensors")
+        self.assertEqual(found["label"], "Comfy-Org/open")
+        self.assertFalse(found["gated"])
+        self.assertEqual(found["url"], "https://huggingface.co/Comfy-Org/open/resolve/main/split_files/vae/M.safetensors")
+        self.assertTrue(server._match_hf(models[:1], "m.safetensors")["gated"])
+        self.assertIsNone(server._match_hf(models[1:2], "m.safetensors"))
+
+    def test_civitai_matches_file_name(self):
+        items = [{"id": 1, "name": "Juggernaut", "modelVersions": [{"id": 7, "name": "X", "files": [
+            {"name": "other.safetensors", "downloadUrl": "https://civitai.com/api/download/models/6"},
+            {"name": "juggernautX.safetensors", "downloadUrl": "https://civitai.com/api/download/models/7", "sizeKB": 2.0},
+        ]}]}]
+        found = server._match_civitai(items, "JuggernautX.safetensors")
+        self.assertEqual((found["url"], found["page"], found["size"]), ("https://civitai.com/api/download/models/7", "https://civitai.com/models/1?modelVersionId=7", 2048))
+        self.assertIsNone(server._match_civitai(items, "missing.safetensors"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

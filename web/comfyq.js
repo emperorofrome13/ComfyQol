@@ -5,6 +5,8 @@ const state = {
   info: null,
   panel: null,
   downloads: new Map(),
+  // Filename -> "searching" or the /comfyq/find-model result for models the workflow has no link for.
+  searches: new Map(),
 };
 
 const MODEL_WIDGET_FOLDERS = {
@@ -301,8 +303,11 @@ function modelSources() {
 
 function missingModel(widget, folder, sources) {
   if (!widgetIsMissing(widget)) return null;
-  const source = sources.get(widget.value) || sources.get(widget.value.split(/[\\/]/).pop());
-  return { name: widget.value, folder: source?.directory || folder, url: source?.url || "" };
+  const filename = widget.value.split(/[\\/]/).pop();
+  const source = sources.get(widget.value) || sources.get(filename);
+  const search = source ? null : state.searches.get(filename) || null;
+  const url = source?.url || (search?.found && !search.gated ? search.url : "");
+  return { name: widget.value, folder: source?.directory || folder, url, search };
 }
 
 function findMissingModels() {
@@ -326,11 +331,35 @@ function activeJobFor(entry) {
   return [...state.downloads.values()].find((job) => job.url === entry.url && ["queued", "downloading"].includes(job.status));
 }
 
-// Starts the download when the workflow knows the URL; otherwise opens the panel with everything but the URL filled in.
+// Searches Hugging Face, then Civitai, for the exact filename. A match only fills in the link; the user still clicks Download.
+async function findModel(entry) {
+  const filename = entry.name.split(/[\\/]/).pop();
+  if (state.searches.get(filename) === "searching") return;
+  state.searches.set(filename, "searching");
+  renderMissingModels(true);
+  try {
+    state.searches.set(filename, await comfyQFetch(`/comfyq/find-model?filename=${encodeURIComponent(filename)}`));
+  } catch (error) {
+    state.searches.delete(filename);
+    setPanelStatus(error.message, true);
+  }
+  renderMissingModels(true);
+}
+
+function findModels(entries) {
+  return entries.reduce((chain, entry) => chain.then(() => findModel(entry)), Promise.resolve());
+}
+
+// Starts the download when a link is known; searches for one first; otherwise opens the panel with everything but the URL filled in.
 async function downloadModel(entry) {
   const parts = entry.name.split(/[\\/]/);
   const filename = parts.pop();
   const subfolder = parts.join("/");
+  if (!entry.url && !entry.search) {
+    await togglePanel();
+    await findModel(entry);
+    return;
+  }
   if (!entry.url) {
     await togglePanel({ folder: entry.folder, filename, subfolder, needUrl: entry.name });
     return;
@@ -756,7 +785,7 @@ function renderMissingModels(force = false) {
   const container = state.missingEl;
   if (!container || !state.panel?.classList.contains("open")) return;
   const missing = findMissingModels();
-  const signature = JSON.stringify(missing.map((entry) => [entry.name, entry.folder, entry.url, Boolean(activeJobFor(entry))]));
+  const signature = JSON.stringify(missing.map((entry) => [entry.name, entry.folder, entry.url, Boolean(activeJobFor(entry)), entry.search]));
   if (!force && container.dataset.signature === signature) return;
   container.dataset.signature = signature;
   if (!missing.length) {
@@ -764,26 +793,40 @@ function renderMissingModels(force = false) {
     return;
   }
   const withUrl = missing.filter((entry) => entry.url && !activeJobFor(entry));
+  const unsearched = missing.filter((entry) => !entry.url && !entry.search);
   container.replaceChildren(
     el("div", { class: "comfyq-missing-head" }, [
       el("strong", { text: `Missing models (${missing.length})` }),
+      unsearched.length > 1 ? el("button", { text: `Find all (${unsearched.length})`, title: "Search Hugging Face, then Civitai, for each file", onclick: () => findModels(unsearched) }) : null,
       withUrl.length > 1 ? el("button", { class: "comfyq-primary", text: `Download all (${withUrl.length})`, onclick: () => downloadModels(withUrl) }) : null,
     ]),
     ...missing.map((entry) => el("div", { class: "comfyq-missing-row" }, [
       el("div", { class: "comfyq-missing-name" }, [
         el("span", { text: entry.name, title: entry.url || "No download link in this workflow" }),
         el("small", { text: entry.folder }),
+        searchNote(entry.search),
       ]),
-      activeJobFor(entry)
-        ? el("span", { class: "comfyq-muted", text: "downloading" })
-        : el("button", {
-          class: entry.url ? "comfyq-primary" : "",
-          text: entry.url ? "Download" : "Add URL",
-          title: entry.url || "No download link in this workflow; paste one below",
-          onclick: () => downloadModels([entry]),
-        }),
+      missingModelAction(entry),
     ])),
   );
+}
+
+function searchNote(search) {
+  if (!search || search === "searching") return null;
+  if (!search.found) return el("small", { class: "comfyq-search-miss", text: search.message });
+  const size = search.size ? ` · ${formatBytes(search.size)}` : "";
+  return el("small", {}, [
+    el("a", { href: search.page, target: "_blank", rel: "noopener noreferrer", text: `${search.source}: ${search.label}${size}` }),
+    search.gated ? " — gated: accept its license on the page, then paste the file URL" : null,
+  ]);
+}
+
+function missingModelAction(entry) {
+  if (activeJobFor(entry)) return el("span", { class: "comfyq-muted", text: "downloading" });
+  if (entry.search === "searching") return el("span", { class: "comfyq-muted", text: "searching…" });
+  if (entry.url) return el("button", { class: "comfyq-primary", text: "Download", title: entry.url, onclick: () => downloadModels([entry]) });
+  if (!entry.search) return el("button", { class: "comfyq-primary", text: "Find", title: "Search Hugging Face, then Civitai, for this file", onclick: () => findModel(entry) });
+  return el("button", { text: "Add URL", title: "Paste a download link below", onclick: () => downloadModels([entry]) });
 }
 
 function updateLauncher() {
@@ -1493,6 +1536,9 @@ function injectStyles() {
         .comfyq-missing-name { display: flex; flex-direction: column; min-width: 0; }
         .comfyq-missing-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .comfyq-missing-name small, .comfyq-muted { opacity: .65; font-size: 12px; }
+        .comfyq-missing-name a { color: inherit; text-decoration: underline; }
+        .comfyq-missing-head { flex-wrap: wrap; }
+        .comfyq-missing-head strong { margin-right: auto; }
         .comfyq-ok { font-size: 12px; opacity: .75; }
         .comfyq-needs-url { border-color: #e0a040 !important; box-shadow: 0 0 0 2px rgba(224,160,64,.35); }
         .comfyq-vue-folder, .comfyq-vue-download {

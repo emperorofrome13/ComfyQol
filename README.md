@@ -13,7 +13,10 @@ It adds no workflow nodes, so it never changes how a workflow runs or saves.
   lists them with **Download** and **Download all**, and a green download button appears
   beside each missing model on the node. Links come from the workflow's own model metadata
   (`properties.models`, which the built-in templates include). Models without a link get
-  **Add URL**, which fills in the folder and filename so you only paste the link.
+  **Find** (or **Find all**): comfyQol searches Hugging Face (Comfy-Org's repos first), then
+  Civitai, for the exact filename and shows where it found it, with a link to the page,
+  before you click **Download**. Searches run only when you click, one request at a time.
+  If nothing matches, **Add URL** fills in the folder and filename so you only paste the link.
   Each download shows a progress bar with size and speed. When the last one finishes,
   comfyQol runs ComfyUI's own **Refresh Node Definitions** (the same as pressing R), so model
   lists update and ComfyUI's missing-model errors clear without reloading the page.
@@ -75,15 +78,18 @@ or when the selected value ends in a model file extension (for the menu items).
 ## Security
 
 comfyQol adds server routes that open folders on the machine running ComfyUI and download
-files into its model folders. Anyone who can reach your ComfyUI server can use them, the same
+files into its model folders, plus one that searches Hugging Face and Civitai by filename (it sends
+only the filename). Anyone who can reach your ComfyUI server can use them, the same
 as the rest of ComfyUI's API. If you run ComfyUI with `--listen` on a shared network, keep
 that in mind. Downloads only accept `http://`/`https://` URLs, and folder and file names are
 checked so they stay inside ComfyUI's model folders.
 
 ## Limitations
 
-- comfyQol does not search the web for models whose workflow has no download link.
-- Gated/login-only downloads (some Hugging Face and Civitai models), resume, and cancel are
+- Find matches exact filenames only, so renamed files are not found, and very generic names
+  such as `model.safetensors` are not searched.
+- Gated/login-only downloads (some Hugging Face and Civitai models) must be done in the browser;
+  Find links to their page. Resume and cancel are
   not supported yet. Download history is kept in server memory until restart.
 - Folder windows open on the computer running ComfyUI, not the one with the browser.
 - Save As and Save to Folder use the browser's file dialogs, which Chrome and Edge allow on

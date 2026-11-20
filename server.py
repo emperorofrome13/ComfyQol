@@ -356,6 +356,8 @@ async def _download(job: DownloadJob, expected_sha256: str | None, overwrite: bo
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=45, sock_read=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(job.url, allow_redirects=True) as response:
+                if response.status in {401, 403}:
+                    raise PermissionError(f"The site refused the download (HTTP {response.status}); it needs a login or API key. Download it in your browser instead: {job.url}")
                 response.raise_for_status()
                 # aiohttp decompresses HTTP content; its wire length then differs from saved bytes.
                 job.total_bytes = response.content_length if response.headers.get("Content-Encoding", "identity").lower() == "identity" else None
@@ -391,6 +393,135 @@ async def _download(job: DownloadJob, expected_sha256: str | None, overwrite: bo
         job.finished_at = time.time()
 
 
+HF_MODELS_API = "https://huggingface.co/api/models"
+CIVITAI_MODELS_API = "https://civitai.com/api/v1/models"
+SEARCH_HEADERS = {"User-Agent": "comfyQol"}
+COMFY_ORG_TTL = 3600
+# Too common to identify one model by name alone.
+GENERIC_STEMS = {"model", "pytorch_model", "diffusion_pytorch_model", "ae", "vae", "clip", "unet"}
+PRECISION_SUFFIX = re.compile(r"[_\-.](fp16|bf16|fp32|f16|f32|fp8\w*|fp4\w*|nf4|int8|q\d\w*|pruned\w*|ema\w*|scaled)$", re.IGNORECASE)
+_search_lock = asyncio.Lock()
+_last_search_request = 0.0
+_comfy_org_index: tuple[float, list[dict[str, Any]]] | None = None
+
+
+def _search_queries(filename: str) -> list[str]:
+    stem = os.path.splitext(filename)[0]
+    queries = [stem]
+    trimmed = stem
+    while (shorter := PRECISION_SUFFIX.sub("", trimmed)) != trimmed:
+        trimmed = shorter
+    if trimmed and trimmed != stem:
+        queries.append(trimmed)
+    return queries
+
+
+def _match_hf(models: list[dict[str, Any]], filename: str) -> dict[str, Any] | None:
+    wanted = filename.lower()
+    gated = None
+    for model in models:
+        for sibling in model.get("siblings") or []:
+            path = sibling.get("rfilename", "")
+            if path.rsplit("/", 1)[-1].lower() != wanted:
+                continue
+            result = {
+                "found": True,
+                "source": "Hugging Face",
+                "label": model["id"],
+                "url": f"https://huggingface.co/{model['id']}/resolve/main/{path}",
+                "page": f"https://huggingface.co/{model['id']}",
+                "gated": bool(model.get("gated")),
+                "size": None,
+            }
+            if not result["gated"]:
+                return result
+            gated = gated or result
+    return gated
+
+
+def _match_civitai(items: list[dict[str, Any]], filename: str) -> dict[str, Any] | None:
+    wanted = filename.lower()
+    for item in items:
+        for version in item.get("modelVersions") or []:
+            for file in version.get("files") or []:
+                if file.get("name", "").lower() == wanted and file.get("downloadUrl"):
+                    return {
+                        "found": True,
+                        "source": "Civitai",
+                        "label": f"{item.get('name', '')} · {version.get('name', '')}",
+                        "url": file["downloadUrl"],
+                        "page": f"https://civitai.com/models/{item['id']}?modelVersionId={version['id']}",
+                        "gated": False,
+                        "size": int(file["sizeKB"] * 1024) if file.get("sizeKB") else None,
+                    }
+    return None
+
+
+async def _get_json(session: aiohttp.ClientSession, url: str, params: dict[str, str]) -> Any:
+    # One request at a time, at least a second apart, so a search never bursts either site.
+    global _last_search_request
+    async with _search_lock:
+        wait = _last_search_request + 1.0 - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            async with session.get(url, params=params, headers=SEARCH_HEADERS) as response:
+                response.raise_for_status()
+                return await response.json()
+        finally:
+            _last_search_request = time.monotonic()
+
+
+async def _comfy_org_models(session: aiohttp.ClientSession) -> list[dict[str, Any]]:
+    global _comfy_org_index
+    if _comfy_org_index is None or time.monotonic() - _comfy_org_index[0] > COMFY_ORG_TTL:
+        models = await _get_json(session, HF_MODELS_API, {"author": "Comfy-Org", "full": "true", "limit": "1000"})
+        _comfy_org_index = (time.monotonic(), models)
+    return _comfy_org_index[1]
+
+
+async def _find_model(filename: str) -> dict[str, Any]:
+    if os.path.splitext(filename)[0].lower() in GENERIC_STEMS:
+        return {"found": False, "message": f"{filename} is too generic a name to search for; paste a URL instead."}
+    queries = _search_queries(filename)
+    errors = []
+    gated = None
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            # Comfy-Org repackages most files that ComfyUI templates use, so check its repos first.
+            match = _match_hf(await _comfy_org_models(session), filename)
+            for query in queries:
+                if match and not match["gated"]:
+                    return match
+                gated = gated or match
+                match = _match_hf(await _get_json(session, HF_MODELS_API, {"search": query, "full": "true", "limit": "20", "sort": "downloads"}), filename)
+            if match and not match["gated"]:
+                return match
+            gated = gated or match
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            errors.append(f"Hugging Face: {str(exc) or type(exc).__name__}")
+
+        # Civitai filenames usually start with the model's name, e.g. juggernautXL_v9.safetensors.
+        prefix = queries[-1].split("_")[0]
+        civitai_queries = queries + ([prefix] if len(prefix) >= 4 and prefix not in queries else [])
+        try:
+            for query in civitai_queries:
+                data = await _get_json(session, CIVITAI_MODELS_API, {"query": query, "limit": "20"})
+                found = _match_civitai(data.get("items") or [], filename)
+                if found:
+                    return found
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            errors.append(f"Civitai: {str(exc) or type(exc).__name__}")
+
+    if gated:
+        return gated
+    message = f"{filename} was not found on Hugging Face or Civitai."
+    if errors:
+        message += " Search errors: " + "; ".join(errors)
+    return {"found": False, "message": message}
+
+
 def register_routes() -> None:
     routes = PromptServer.instance.routes
 
@@ -398,7 +529,7 @@ def register_routes() -> None:
     async def info(request: web.Request) -> web.Response:
         return web.json_response(
             {
-                "version": "1.0.5",
+                "version": "1.0.6",
                 "process_id": os.getpid(),
                 "model_folders": _model_folders_payload(),
                 "paths": {
@@ -409,7 +540,7 @@ def register_routes() -> None:
                 },
                 "suggestions": [
                     "Open input, output, custom nodes, and model folders from the UI.",
-                    "Download missing models to the selected ComfyUI model directory.",
+                    "Download missing models, searching Hugging Face and Civitai when the workflow has no link.",
                     "Unpack or remove all current-workflow subgraphs.",
                     "Copy selected model names and rescan model lists after downloads.",
                 ],
@@ -454,6 +585,14 @@ def register_routes() -> None:
         except (OSError, ValueError) as exc:
             return _json_error(str(exc), status=404)
         return web.Response(body=data, content_type="image/webp", headers={"Cache-Control": "max-age=86400"})
+
+    @routes.get("/comfyq/find-model")
+    async def find_model(request: web.Request) -> web.Response:
+        try:
+            filename = _safe_filename(request.query.get("filename", ""))
+        except ValueError as exc:
+            return _json_error(str(exc))
+        return web.json_response(await _find_model(filename))
 
     @routes.get("/comfyq/downloads")
     async def list_downloads(request: web.Request) -> web.Response:
